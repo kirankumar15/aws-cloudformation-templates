@@ -700,7 +700,7 @@ Resources:
         ZipFile: !Sub |
           'use strict';
 
-           exports.handler = (event, context, callback) => {
+           exports.handler = async (event, context) => {
               console.log('Adding additional headers to CloudFront response.');
 
               const response = event.Records[0].cf.response;
@@ -728,9 +728,9 @@ Resources:
                   key:   'Referrer-Policy',
                   value: "same-origin"
               }];
-              callback(null, response);
+              return response;
             };
-      Runtime: nodejs6.10
+      Runtime: nodejs24.x
 
 # LAMBDA@EDGE VERSION VERSION
   LambdaEdgeVersion:
@@ -752,21 +752,45 @@ Resources:
       Timeout: 30
       Code:
         ZipFile: !Sub |
-          var AWS = require('aws-sdk');
-          var response = require('cfn-response');
-          exports.handler = (event, context) => {
+          const { LambdaClient, PublishVersionCommand } = require('@aws-sdk/client-lambda');
+          const SUCCESS = 'SUCCESS';
+          const FAILED = 'FAILED';
+          const send = async (event, context, responseStatus, responseData, physicalResourceId) => {
+            const responseBody = JSON.stringify({
+              Status: responseStatus,
+              Reason: 'See the details in CloudWatch Log Stream: ' + context.logStreamName,
+              PhysicalResourceId: physicalResourceId || context.logStreamName,
+              StackId: event.StackId,
+              RequestId: event.RequestId,
+              LogicalResourceId: event.LogicalResourceId,
+              Data: responseData
+            });
+            console.log('Response body:\n', responseBody);
+            try {
+              const res = await fetch(event.ResponseURL, {
+                method: 'PUT',
+                headers: { 'content-type': '' },
+                body: responseBody
+              });
+              console.log('Status code: ' + res.status);
+            } catch (error) {
+              console.log('send(..) failed executing fetch: ' + error);
+            }
+          };
+          exports.handler = async (event, context) => {
             console.log("Request received:\n", JSON.stringify(event));
             if (event.RequestType == 'Delete') {
-              return response.send(event, context, response.SUCCESS);
+              return send(event, context, SUCCESS);
             }
-            var lambda = new AWS.Lambda();
-            lambda.publishVersion({FunctionName: event.ResourceProperties.FunctionName}).promise().then((data) => {
-              return response.send(event, context, response.SUCCESS, {Version: data.Version}, data.FunctionArn);
-            }).catch((e) => {
-              return response.send(event, context, response.FAILED, e);
-            });
+            const lambda = new LambdaClient();
+            try {
+              const data = await lambda.send(new PublishVersionCommand({FunctionName: event.ResourceProperties.FunctionName}));
+              return send(event, context, SUCCESS, {Version: data.Version}, data.FunctionArn);
+            } catch (e) {
+              return send(event, context, FAILED, {Error: String(e)});
+            }
           };
-      Runtime: nodejs6.10
+      Runtime: nodejs24.x
 
 
 Outputs:

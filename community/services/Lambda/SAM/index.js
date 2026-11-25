@@ -8,7 +8,7 @@ const createResponse = (statusCode, body) => {
   }
 };
 
-exports.handler = (event, context, callback) => {
+exports.handler = async (event, context) => {
   const response = createResponse(200, "Hello SAM.");
-  callback(null, response);
+  return response;
 };

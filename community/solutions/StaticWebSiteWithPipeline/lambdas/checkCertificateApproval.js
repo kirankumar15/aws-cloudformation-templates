@@ -1,17 +1,18 @@
-const aws = require('aws-sdk');
+const { ACMClient, DescribeCertificateCommand } = require('@aws-sdk/client-acm');
+const { LambdaClient, InvokeCommand } = require('@aws-sdk/client-lambda');
 
-exports.handler = (event, context, callback) => {
+exports.handler = async (event, context) => {
 
     console.log('Check Certification Validation =>'+ JSON.stringify(event));
 
     if (event.RequestType == "Update" || event.RequestType == "Delete") {
-        sendResponse(event, context, "SUCCESS", event.PhysicalResourceId, {"Message" : "Certificate Approval Status does not need to be Updated or Removed!"});
+        await sendResponse(event, context, "SUCCESS", event.PhysicalResourceId, {"Message" : "Certificate Approval Status does not need to be Updated or Removed!"});
         return;
     }
 
     var certificateARN = event.ResourceProperties.certificateARN;
     if (certificateARN == undefined) {
-        sendResponse(event, context, "FAILED", '', {"Message" : "Invalid Certificate ARN!"});
+        await sendResponse(event, context, "FAILED", '', {"Message" : "Invalid Certificate ARN!"});
         return;
     }
 
@@ -21,69 +22,66 @@ exports.handler = (event, context, callback) => {
 
     if (numberOfCalls > 0) {
 
-        checkCertificate(event, context, numberOfCalls);
+        await checkCertificate(event, context, numberOfCalls);
 
     } else {
         
         const resourceId = String(event.RequestId);
-        sendResponse(event, context, "FAILED", resourceId, {"Message":"Max function invocation reached!"});
+        await sendResponse(event, context, "FAILED", resourceId, {"Message":"Max function invocation reached!"});
 
     }
     
 };
 
-function checkCertificate(event, context, nextCall) {
+async function checkCertificate(event, context, nextCall) {
 
     if (nextCall > 0) {
         
         const certificateARN = event.ResourceProperties.certificateARN;
-        const acm = new aws.ACM({apiVersion: '2015-12-08', region: 'us-east-1'});
-        acm.describeCertificate({CertificateArn: certificateARN}, function(err, data) {
+        const acm = new ACMClient({region: 'us-east-1'});
+        let data;
+        try {
+            data = await acm.send(new DescribeCertificateCommand({CertificateArn: certificateARN}));
+        } catch (err) {
+            await sendResponse(event, context, "FAILED", event.PhysicalResourceId, {"Message" : err});
+            return;
+        }
 
-            if (err == undefined) {
+        const resourceId = String(event.RequestId);
+        const status = data.Certificate.Status;
+        if (status == "ISSUED") {
 
-                const resourceId = String(event.RequestId);
-                const status = data.Certificate.Status;
-                if (status == "ISSUED") {
+            await sendResponse(event, context, "SUCCESS", resourceId, {"Message" : "Certificate " + certificateARN + " Approved!"});
 
-                    sendResponse(event, context, "SUCCESS", resourceId, {"Message" : "Certificate " + certificateARN + " Approved!"});
+        } else if (status == "INACTIVE" || status == "EXPIRED" || status == "VALIDATION_TIMED_OUT" || status == "REVOKED" || status == "FAILED") {
 
-                } else if (status == "INACTIVE" || status == "EXPIRED" || status == "VALIDATION_TIMED_OUT" || status == "REVOKED" || status == "FAILED") {
+            await sendResponse(event, context, "FAILED", resourceId, {"Message" : "Certificate " + certificateARN + " Status is:" + status});
 
-                    sendResponse(event, context, "FAILED", resourceId, {"Message" : "Certificate " + certificateARN + " Status is:" + status});
+        } else if (status == "PENDING_VALIDATION") {
 
-                } else if (status == "PENDING_VALIDATION") {
+            var remaining = context.getRemainingTimeInMillis();
+            await new Promise((resolve) => setTimeout(resolve, remaining / 2));
 
-                    var remaining = context.getRemainingTimeInMillis();
-                    setTimeout(function () {
-                        
-                        var counter = {"numberOfCalls":nextCall -1};
-                        var newEvent = Object.assign(event, counter);
+            var counter = {"numberOfCalls":nextCall -1};
+            var newEvent = Object.assign(event, counter);
 
-                        const params = {
-                            FunctionName: context.functionName,
-                            InvocationType: 'Event',
-                            Payload: JSON.stringify(newEvent),
-                            Qualifier: context.functionVersion
-                        };
-                
-                        const lambda = new aws.Lambda();
-                        lambda.invoke(params, context.done);
-
-                      }, remaining / 2);
-
-
-                } else {sendResponse(event, context, "FAILED", resourceId, {"Message" : "Invalid Certificate Status returned from ACM:" + status});}
+            const params = {
+                FunctionName: context.functionName,
+                InvocationType: 'Event',
+                Payload: Buffer.from(JSON.stringify(newEvent)),
+                Qualifier: context.functionVersion
+            };
     
-            } else  {sendResponse(event, context, "FAILED", event.PhysicalResourceId, {"Message" : err});}
-    
-          });
+            const lambda = new LambdaClient({});
+            return await lambda.send(new InvokeCommand(params));
 
-    } else {sendResponse(event, context, "FAILED", event.PhysicalResourceId, {"Message":"CheckApproval reached Invoke Limit!"})}
+        } else {await sendResponse(event, context, "FAILED", resourceId, {"Message" : "Invalid Certificate Status returned from ACM:" + status});}
+
+    } else {await sendResponse(event, context, "FAILED", event.PhysicalResourceId, {"Message":"CheckApproval reached Invoke Limit!"})}
 
 }
 
-function sendResponse(event, context, responseStatus, resourceId, responseData) {
+async function sendResponse(event, context, responseStatus, resourceId, responseData) {
     
     const responseMessage = responseStatus == "SUCCESS" ? "See the details in CloudWatch Log Stream: " + context.logStreamName : JSON.stringify(responseData.Message);
 
@@ -99,31 +97,16 @@ function sendResponse(event, context, responseStatus, resourceId, responseData) 
 
     console.log("Sending response " + responseStatus + ": " + responseBody);
 
-    var https = require("https");
-    var url = require("url");
- 
-    var parsedUrl = url.parse(event.ResponseURL);
-    var options = {
-        hostname: parsedUrl.hostname,
-        port: 443,
-        path: parsedUrl.path,
-        method: "PUT",
-        headers: {
-            "content-type": "",
-            "content-length": responseBody.length
-        }
-    };
- 
-    var request = https.request(options, function(response) {
-        context.done();
-    });
- 
-    request.on("error", function(error) {
+    try {
+        await fetch(event.ResponseURL, {
+            method: "PUT",
+            headers: {
+                "content-type": ""
+            },
+            body: responseBody
+        });
+    } catch (error) {
         console.log("sendResponse Error:" + error);
-        context.done();
-    });
-  
-    request.write(responseBody);
-    request.end();
+    }
 
 }

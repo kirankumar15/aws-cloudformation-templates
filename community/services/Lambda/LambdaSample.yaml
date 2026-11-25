@@ -59,12 +59,13 @@ Resources:
     Properties:
       FunctionName:
         Fn::Sub: lambda-function-${EnvName}
-      Description: LambdaFunctioni of nodejs4.3.
-      Runtime: nodejs4.3
+      Description: LambdaFunctioni of nodejs24.x.
+      Runtime: nodejs24.x
       Code:
         ZipFile:
-          "exports.handler = function(event, context){\n
-            var sample = sample;"
+          "exports.handler = async function(event, context){\n
+            var sample = sample;\n
+            };"
       Handler: ${LambdaHandlerPath}
       MemorySize: 128
       Timeout: 10
