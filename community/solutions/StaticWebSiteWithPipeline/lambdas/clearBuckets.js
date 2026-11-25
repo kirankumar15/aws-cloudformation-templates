@@ -1,70 +1,51 @@
-var aws = require("aws-sdk");
+const { S3Client, ListObjectsCommand, DeleteObjectsCommand } = require("@aws-sdk/client-s3");
 var resourceName = "emptyBucketToken";
 
-exports.handler = function(event, context) {
+exports.handler = async function(event, context) {
 
     if (event.RequestType == "Update" || event.RequestType == "Create") {
-        sendResponse(event, context, "SUCCESS", resourceName, {"Message" : "ClearBuckets not need to run when Stack is Created or Updated!"});
+        await sendResponse(event, context, "SUCCESS", resourceName, {"Message" : "ClearBuckets not need to run when Stack is Created or Updated!"});
         return;
     }
 
     console.log("clearBuckets for =>" + JSON.stringify(event));
     var bucketName = event.ResourceProperties.bucketName;
 
-    getBucketObjects(bucketName, function(err, data) {
+    try {
 
-        if (err == null) {
-            
-            clearBucket(data, function(err, data) {
+        var data = await getBucketObjects(bucketName);
+        await clearBucket(data);
+        await sendResponse(event, context, "SUCCESS", resourceName, {"Message" : "Buckets Cleared!"});
 
-                if (err == null) {sendResponse(event, context, "SUCCESS", resourceName, {"Message" : "Buckets Cleared!"});
-                } else {sendResponse(event, context, "FAILED", resourceName, {"Message" : err});}
-
-            });
-
-        } else {sendResponse(event, context, "FAILED", resourceName, {"Message" : err});}
-
-    });
+    } catch (err) {await sendResponse(event, context, "FAILED", resourceName, {"Message" : err});}
 
 };
 
-function getBucketObjects(bucketName, getHandler) {
+async function getBucketObjects(bucketName) {
 
-    var s3 = new aws.S3();
+    var s3 = new S3Client({});
     var listParam = {"Bucket": bucketName};
     
-    s3.listObjects(listParam, function (err, data) {
+    var data = await s3.send(new ListObjectsCommand(listParam));
 
-        if (err == null) {
+    var items = data.Contents || [];
+    var keys = items.map(item => {return {"Key": item.Key}});
+    var param = {
+        "Bucket": bucketName,
+        "Delete": {"Objects": keys, "Quiet": true}
+    };
 
-            var items = data.Contents;
-            var keys = items.map(item => {return {"Key": item.Key}});
-            var param = {
-                "Bucket": bucketName,
-                "Delete": {"Objects": keys, "Quiet": true}
-            };
-
-            getHandler(null, param);
-
-        } else { getHandler(err, null); }
-
-    });
+    return param;
 }
 
-function clearBucket(objectList, clearHandler) {
+async function clearBucket(objectList) {
     
-    var s3 = new aws.S3();
-    s3.deleteObjects(objectList, function(err, data) {
-                
-        if (err == null) {
-            clearHandler(null, data);
-        } else {clearHandler(err, null);}
-
-    });
+    var s3 = new S3Client({});
+    return await s3.send(new DeleteObjectsCommand(objectList));
     
 }
 
-function sendResponse(event, context, responseStatus, resourceId, responseData) {
+async function sendResponse(event, context, responseStatus, resourceId, responseData) {
     
     const responseMessage = responseStatus == "SUCCESS" ? "See the details in CloudWatch Log Stream: " + context.logStreamName : JSON.stringify(responseData.Message);
 
@@ -80,31 +61,16 @@ function sendResponse(event, context, responseStatus, resourceId, responseData) 
 
     console.log("Sending response " + responseStatus + ": " + responseBody);
 
-    var https = require("https");
-    var url = require("url");
- 
-    var parsedUrl = url.parse(event.ResponseURL);
-    var options = {
-        hostname: parsedUrl.hostname,
-        port: 443,
-        path: parsedUrl.path,
-        method: "PUT",
-        headers: {
-            "content-type": "",
-            "content-length": responseBody.length
-        }
-    };
- 
-    var request = https.request(options, function(response) {
-        context.done();
-    });
- 
-    request.on("error", function(error) {
+    try {
+        await fetch(event.ResponseURL, {
+            method: "PUT",
+            headers: {
+                "content-type": ""
+            },
+            body: responseBody
+        });
+    } catch (error) {
         console.log("sendResponse Error:" + error);
-        context.done();
-    });
-  
-    request.write(responseBody);
-    request.end();
+    }
 
 }

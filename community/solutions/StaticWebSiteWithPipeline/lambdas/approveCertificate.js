@@ -1,68 +1,63 @@
-var aws = require("aws-sdk");
+const { ACMClient, DescribeCertificateCommand } = require("@aws-sdk/client-acm");
+const { Route53Client, ChangeResourceRecordSetsCommand } = require("@aws-sdk/client-route-53");
  
-exports.handler = function(event, context) {
+exports.handler = async function(event, context) {
 
     const cfOperation = String(event.RequestType);
-    if (cfOperation == "Create") {createResource(event, context);
-    } else if (cfOperation == "Update") {updateResource(event, context);
-    } else if (cfOperation == "Delete") {deleteResource(event, context);
-    } else {sendResponse(event, context, "FAILED", '', {"Message":"Unrecognized Cloud Formation RequestType!"});}
+    if (cfOperation == "Create") {await createResource(event, context);
+    } else if (cfOperation == "Update") {await updateResource(event, context);
+    } else if (cfOperation == "Delete") {await deleteResource(event, context);
+    } else {await sendResponse(event, context, "FAILED", '', {"Message":"Unrecognized Cloud Formation RequestType!"});}
 
 };
 
-function getCertificateInfo(certificateARN, resultHandler) {
+async function getCertificateInfo(certificateARN) {
 
-    var acm = new aws.ACM({apiVersion: '2015-12-08', region: 'us-east-1'});
-    acm.describeCertificate({CertificateArn: certificateARN}, function(err, data) {
+    var acm = new ACMClient({region: 'us-east-1'});
+    const data = await acm.send(new DescribeCertificateCommand({CertificateArn: certificateARN}));
 
-        if (err == undefined) {
-            
-            const result = {
-                "domainName": data.Certificate.DomainName,
-                "resourceRecords": data.Certificate.DomainValidationOptions
-            }
+    const result = {
+        "domainName": data.Certificate.DomainName,
+        "resourceRecords": data.Certificate.DomainValidationOptions
+    }
 
-            resultHandler(undefined, result);
-
-        } else  {resultHandler(err, undefined);}
-
-      });
+    return result;
 
 }
 
-function createResource(event, context) {
+async function createResource(event, context) {
 
     console.log("Approve Public Certificate. Event =>" + JSON.stringify(event))
 
     const certificateARN = event.ResourceProperties.certificateARN;
     if (certificateARN == undefined) {
-        sendResponse(event, context, "FAILED", 'NOTCREATED', {"Message" : "Invalid Certificate ARN!"});
+        await sendResponse(event, context, "FAILED", 'NOTCREATED', {"Message" : "Invalid Certificate ARN!"});
         return;
     }
 
-    getCertificateInfo(certificateARN, function(err, data) {
+    let data;
+    try {
+        data = await getCertificateInfo(certificateARN);
+    } catch (err) {
+        await sendResponse(event, context, "FAILURE", "NOTCREATED", {"Message" : err});
+        return;
+    }
 
-        if (err == undefined) {
+    var hostedZoneId = event.ResourceProperties.hostedZoneId;
+    var domainName = data.domainName;
+    var resourceRecords = JSON.stringify(data.resourceRecords);
 
-            var hostedZoneId = event.ResourceProperties.hostedZoneId;
-            var domainName = data.domainName;
-            var resourceRecords = JSON.stringify(data.resourceRecords);
+    var operationInfo = {
+        "hostedZoneId":hostedZoneId,
+        "domainName": domainName,
+        "resourceRecords": resourceRecords
+    };
 
-            var operationInfo = {
-                "hostedZoneId":hostedZoneId,
-                "domainName": domainName,
-                "resourceRecords": resourceRecords
-            };
-
-            createRoute53Records(event, context, operationInfo);
-
-        } else  {sendResponse(event, context, "FAILURE", "NOTCREATED", {"Message" : err});}
-
-    });
+    await createRoute53Records(event, context, operationInfo);
 
 }
 
-function createRoute53Records(event, context, info) {
+async function createRoute53Records(event, context, info) {
 
     var createBatch = {Changes: [], Comment: "Insert AWS ACM Validation endpoint for " + info.domainName};
     var records = JSON.parse(info.resourceRecords);
@@ -84,32 +79,32 @@ function createRoute53Records(event, context, info) {
         };
 
         var resourceId = info.domainName;
-        var route53 = new aws.Route53({apiVersion: '2013-04-01'});
-        route53.changeResourceRecordSets(operation, function(err, data) {
-        
-            if (err == undefined) {sendResponse(event, context, "SUCCESS", resourceId, {"Message" : "RecordSet created in Route53"});
-            } else  {sendResponse(event, context, "FAILED", resourceId, {"Message" : err});}
-    
-        });
+        var route53 = new Route53Client({});
+        try {
+            await route53.send(new ChangeResourceRecordSetsCommand(operation));
+            await sendResponse(event, context, "SUCCESS", resourceId, {"Message" : "RecordSet created in Route53"});
+        } catch (err) {
+            await sendResponse(event, context, "FAILED", resourceId, {"Message" : err});
+        }
 
-    } else {sendResponse(event, context, "FAILED", "NOTCREATED", {"Message" : "Public Certificate does not support DNS Validation!"});}
+    } else {await sendResponse(event, context, "FAILED", "NOTCREATED", {"Message" : "Public Certificate does not support DNS Validation!"});}
 
 }
 
-function updateResource(event, context) {
+async function updateResource(event, context) {
 
     console.log("Update Certificate Validation URL. Event =>" + JSON.stringify(event));
 
     const resourceId = JSON.parse(event.PhysicalResourceId);
     if (resourceId.length > 0) {
 
-        sendResponse(event, context, "SUCCESS", resourceId, {"Message":"Resource update not implemented!"});
+        await sendResponse(event, context, "SUCCESS", resourceId, {"Message":"Resource update not implemented!"});
 
-    } else {sendResponse(event, context, "SUCCESS", '', {"Message":"Resource update not implemented!"});}
+    } else {await sendResponse(event, context, "SUCCESS", '', {"Message":"Resource update not implemented!"});}
 
 }
 
-function deleteResource(event, context) {
+async function deleteResource(event, context) {
 
     console.log("Delete Certificate Validation URL. Event =>" + JSON.stringify(event));
 
@@ -118,32 +113,32 @@ function deleteResource(event, context) {
 
     if (resourceId != undefined && resourceId != "NOTCREATED") {
 
-        getCertificateInfo(certificateARN, function(err, data) {
+        let data;
+        try {
+            data = await getCertificateInfo(certificateARN);
+        } catch (err) {
+            await sendResponse(event, context, "FAILURE", resourceId, {"Message" : err});
+            return;
+        }
 
-            if (err == undefined) {
-    
-                var hostedZoneId = event.ResourceProperties.hostedZoneId;
-                var domainName = data.domainName;
-                var resourceRecords = JSON.stringify(data.resourceRecords);
-    
-                var operationInfo = {
-                    "resourceId": resourceId,
-                    "hostedZoneId":hostedZoneId,
-                    "domainName": domainName,
-                    "resourceRecords": resourceRecords
-                };
-    
-                deleteRoute53Records(event, context, operationInfo);
-    
-            } else  {sendResponse(event, context, "FAILURE", resourceId, {"Message" : err});}
-    
-        });
+        var hostedZoneId = event.ResourceProperties.hostedZoneId;
+        var domainName = data.domainName;
+        var resourceRecords = JSON.stringify(data.resourceRecords);
 
-    } else {sendResponse(event, context, "SUCCESS", resourceId, {"Message":"Resource was not created, so it doesn't need to be removed!"});}
+        var operationInfo = {
+            "resourceId": resourceId,
+            "hostedZoneId":hostedZoneId,
+            "domainName": domainName,
+            "resourceRecords": resourceRecords
+        };
+
+        await deleteRoute53Records(event, context, operationInfo);
+
+    } else {await sendResponse(event, context, "SUCCESS", resourceId, {"Message":"Resource was not created, so it doesn't need to be removed!"});}
 
 }
 
-function deleteRoute53Records(event, context, info) {
+async function deleteRoute53Records(event, context, info) {
 
     var resourceId = info.resourceId;
     var removeBatch = {Changes: [], Comment: "Remove AWS ACM Validation endpoint for " + event.domainName};
@@ -165,19 +160,19 @@ function deleteRoute53Records(event, context, info) {
             "ChangeBatch": removeBatch
         };
 
-        var route53 = new aws.Route53({apiVersion: '2013-04-01'});
-        route53.changeResourceRecordSets(operation, function(err, data) {
-        
-            if (err == undefined) {sendResponse(event, context, "SUCCESS", resourceId, {"Message" : "RecordSet created in Route53"});
-            } else  {sendResponse(event, context, "FAILED", resourceId, {"Message" : err});}
-    
-        });
+        var route53 = new Route53Client({});
+        try {
+            await route53.send(new ChangeResourceRecordSetsCommand(operation));
+            await sendResponse(event, context, "SUCCESS", resourceId, {"Message" : "RecordSet created in Route53"});
+        } catch (err) {
+            await sendResponse(event, context, "FAILED", resourceId, {"Message" : err});
+        }
 
-    } else {sendResponse(event, context, "FAILED", resourceId, {"Message" : "Public Certificate does not support DNS Validation!"});}
+    } else {await sendResponse(event, context, "FAILED", resourceId, {"Message" : "Public Certificate does not support DNS Validation!"});}
 
 }
 
-function sendResponse(event, context, responseStatus, resourceId, responseData) {
+async function sendResponse(event, context, responseStatus, resourceId, responseData) {
 
     var responseBody = JSON.stringify({
         Status: responseStatus,
@@ -191,31 +186,16 @@ function sendResponse(event, context, responseStatus, resourceId, responseData) 
     
     console.log("Sending response " + responseStatus + ": " + responseBody);
 
-    var https = require("https");
-    var url = require("url");
- 
-    var parsedUrl = url.parse(event.ResponseURL);
-    var options = {
-        hostname: parsedUrl.hostname,
-        port: 443,
-        path: parsedUrl.path,
-        method: "PUT",
-        headers: {
-            "content-type": "",
-            "content-length": responseBody.length
-        }
-    };
- 
-    var request = https.request(options, function(response) {
-        context.done();
-    });
- 
-    request.on("error", function(error) {
+    try {
+        await fetch(event.ResponseURL, {
+            method: "PUT",
+            headers: {
+                "content-type": ""
+            },
+            body: responseBody
+        });
+    } catch (error) {
         console.log("sendResponse Error:" + error);
-        context.done();
-    });
-  
-    request.write(responseBody);
-    request.end();
+    }
 
 }
