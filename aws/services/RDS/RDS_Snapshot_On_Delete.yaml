@@ -15,10 +15,15 @@ Resources:
       DBInstanceClass: db.t2.small
       Engine: MySQL
       MasterUsername: myName
-      MasterUserPassword: myPassword
+      # RDS generates the master password and keeps it in an RDS-managed
+      # AWS Secrets Manager secret with rotation, so no password is in the template.
+      ManageMasterUserPassword: true
     DeletionPolicy: Snapshot
 Outputs:
   JDBCConnectionString:
     Description: JDBC connection string for the database
     Value: !Join ['', ['jdbc:mysql://', !GetAtt [MyDB, Endpoint.Address], ':', !GetAtt [
           MyDB, Endpoint.Port], /MyDatabase]]
+  MasterUserSecretArn:
+    Description: ARN of the Secrets Manager secret that holds the master user password
+    Value: !GetAtt [MyDB, MasterUserSecret.SecretArn]
