@@ -23,7 +23,7 @@ import json
 import logging
 import threading
 
-from botocore.vendored import requests
+from urllib.request import Request, urlopen
 
 
 def log_config(event, loglevel=None, botolevel=None):
@@ -78,12 +78,14 @@ def send(event, context, response_status, response_data, physical_resource_id,
     }
 
     try:
-        response = requests.put(response_url,
-                                data=json_response_body,
-                                headers=headers)
-        logger.info("CloudFormation returned status code: {}".format(response.reason))
+        request = Request(response_url,
+                          data=json_response_body.encode('utf-8'),
+                          headers=headers,
+                          method='PUT')
+        with urlopen(request) as response:
+            logger.info("CloudFormation returned status code: {}".format(response.reason))
     except Exception as e:
-        logger.error("send(..) failed executing requests.put(..): {}".format(e))
+        logger.error("send(..) failed executing urlopen(..): {}".format(e))
         raise
 
 
