@@ -5,7 +5,7 @@
 #  This file is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, express or implied.
 #  See the License for the specific language governing permissions and limitations under the License.
 
-from botocore.vendored import requests
+from urllib.request import Request, urlopen
 import json
 
 SUCCESS = "SUCCESS"
@@ -36,9 +36,11 @@ def send(event, context, responseStatus, responseData, physicalResourceId=None, 
     }
 
     try:
-        response = requests.put(responseUrl,
-                                data=json_responseBody,
-                                headers=headers)
-        print("Status code: " + response.reason)
+        request = Request(responseUrl,
+                          data=json_responseBody.encode('utf-8'),
+                          headers=headers,
+                          method='PUT')
+        with urlopen(request) as response:
+            print("Status code: " + response.reason)
     except Exception as e:
-        print("send(..) failed executing requests.put(..): " + str(e))
+        print("send(..) failed executing urlopen(..): " + str(e))
